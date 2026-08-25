@@ -6,8 +6,6 @@ from torch.nn.modules import Module
 from torch import Tensor
 from torch.nn import init
 from torch.nn.parameter import Parameter
-from einops import rearrange
-from torch.utils.checkpoint import checkpoint
 from .structured_linear import StructuredLinear
 from .blockdiag_butterfly_multiply import blockdiag_butterfly_multiply
 
@@ -69,7 +67,6 @@ class MonarchLinear(StructuredLinear):
             self.blkdiag1 = nn.Parameter(torch.empty(nblocks, out_blksz, in_blksz), requires_grad=True)
             self.blkdiag2 = nn.Parameter(torch.empty(nblocks, out_blksz, out_blksz), requires_grad=True)
         self.reset_parameters()
-        #logger.info(f'Linear class {self.__class__}: saving={self.saving}')
 
     def reset_parameters(self) -> None:
         # Mimic init.kaiming_uniform: https://github.com/pytorch/pytorch/blob/24087d07ca7ffa244575d259711dd7c99245a67a/torch/nn/init.py#L360
@@ -154,12 +151,9 @@ class MixColumnLinear(Module):
         self.nblocks = find_divisor(low_end-start, find_largest_divisor)
         self.init_method=init_method
         self.mixer = MonarchLinear(in_features=low_end - start, out_features=low_end - start, bias=False, nblocks=self.nblocks, init_method=self.init_method)
-        #self.mixer = nn.Parameter(torch.zeros(1, low_end - start), requires_grad=True)
         self.mixer_scale = nn.Parameter(torch.ones(1, low_end - start), requires_grad=True)
-        #self.mixer = nn.Linear(end - low_end, low_end - start, bias=False)
         self.mix_channels=mix_channels
-        
-        #print("merge channels:",str(self.mix_channels))
+
         self.reset_parameters()
         self.weight.requires_grad = False
         self.fused = False
@@ -174,13 +168,6 @@ class MixColumnLinear(Module):
             bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
             init.uniform_(self.bias, -bound, bound)
         self.mixer.reset_parameters()
-
-        
-        # for i in range((self.end - self.start)//2):
-        #     weight[i, i] = 1
-        # with torch.no_grad():
-        #     self.mixer.weight.copy_(weight)
-        
 
     def fuse_s2_weight(self):
         if self.fused == True:
@@ -218,7 +205,6 @@ class MixColumnLinear(Module):
                 modified_low_channel = modified_channel[..., :self.low_end]
                 # Use the mixer to produce the new low half
                 mixed_low_part =  modified_low_channel * self.mixer_vec
-                #mixed_low_part = modified_high_channel * self.mixer + modified_low_channel * self.mixer_vec
                 mixed_high_part = self.mixer(modified_high_channel) + modified_high_channel * self.mixer_scale
                 # Construct the tuned segment from the mixed pair and direct-update tail
                 direct_tuned_part = modified_channel[..., self.end - self.start :]
@@ -244,8 +230,6 @@ class MixColumnLinear(Module):
                 modified_low_channel = modified_channel[..., :self.low_end]
                 
                 # Use the mixer to produce the new low half
-                #mixed_high = checkpoint(self.mixer, modified_high_channel)  # Recompute instead of storing
-                #mixed_low_part = mixed_high + modified_low_channel * self.mixer_vec
                 mixed_low_part = self.mixer(modified_high_channel) + modified_low_channel * self.mixer_vec
                 mixed_high_part = modified_high_channel * self.mixer_scale
                 
@@ -262,12 +246,6 @@ class MixColumnLinear(Module):
                     base_output[..., self.tuned_end:]
                 ], dim=-1)
                 return output
-            # base_output[:, :, self.start : self.end] += s2_output
-            # # Use the mixer output without in-place assignment
-            # mixer_output = self.mixer(base_output[:, :, self.start : self.end])
-            # base_output[:, :, self.start : (self.end+1)//2] = mixer_output
-            #base_output[:, :, self.start : (self.end+1)//2] = self.mixer(base_output[:, :, self.start : self.end])
-            
 
     def extra_repr(self) -> str:
         return f"in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None}"
@@ -320,18 +298,14 @@ class MixRowLinear(Module):
         self.low_end = low_end
         self.end = end
         self.mixer_vec = nn.Parameter(torch.ones(1, low_end - start), requires_grad=True)
-        #self.mixer = nn.Parameter(torch.zeros(1, low_end - start), requires_grad=True)
         self.nblocks = find_divisor(low_end-start, find_largest_divisor)
-        # print("shape:",low_end-start)
-        # print("nblocks:",self.nblocks)
         self.init_method=init_method
         self.mixer = MonarchLinear(in_features=low_end - start, out_features=low_end - start, bias=False, nblocks=self.nblocks, init_method=self.init_method)
         self.s2 = nn.Parameter(
             torch.zeros(out_features, tuned_end - start), requires_grad=True
         )
         self.mix_channels = mix_channels
-        
-        #print("merge channels:",str(self.mix_channels))
+
         self.reset_parameters()
         self.weight.requires_grad = False
         self.fused = False
@@ -352,10 +326,6 @@ class MixRowLinear(Module):
             return
         with torch.no_grad():
             self.weight.data[:,self.start : self.tuned_end] += self.s2
-            # self.weight.data[:, self.start : self.low_end] = (
-            #     self.weight.data[:, self.start : self.low_end] * self.mixer_vec.data
-            #     + self.weight.data[:, self.low_end : self.end] * self.mixer.data
-            # )
             if not self.mix_channels:
                 monarch_weight = self.mixer.convert_to_dense_weight()
                 self.weight.data[:, self.start : self.low_end] = self.weight.data[:, self.start : self.low_end] * self.mixer_vec.data
@@ -411,226 +381,6 @@ class MixRowLinear(Module):
                 
                 # Apply one linear operation, including bias
                 return torch.nn.functional.linear(input, full_weight, self.bias)
-            # # Compute the mixed output segment
-            # mixed_output = torch.nn.functional.linear(
-            #     input[..., self.start : self.low_end], 
-            #     mixed_weight_low, 
-            #     None
-            # )
-            # # Compute the mixed output segment
-            # high_output = torch.nn.functional.linear(
-            #     input[..., self.low_end : self.tuned_end], 
-            #     tuned_weight[:, self.low_end :], 
-            #     None
-            # )
-            # # Compute the mixed output segment
-            # other_output = torch.nn.functional.linear(
-            #     input[..., self.tuned_end : ], 
-            #     self.weight[:, self.tuned_end :], 
-            #     None
-            # )
-            # base_output = mixed_output+high_output+other_output
-            # s2_output = torch.nn.functional.linear(
-            #     input[:, :, self.start : self.tuned_end], self.s2, None
-            # )
-            # base_output += s2_output
-            # return base_output
 
     def extra_repr(self) -> str:
         return f"in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None}"
-
-# class MixColumnLinear(Module):
-
-#     __constants__ = ["in_features", "out_features"]
-#     in_features: int
-#     out_features: int
-#     weight: Tensor
-
-#     def __init__(
-#         self,
-#         in_features: int,
-#         out_features: int,
-#         bias: bool = True,
-#         start=None,
-#         end=None,
-#         low_end=None,
-#         device=None,
-#         dtype=None,
-#     ) -> None:
-#         factory_kwargs = {"device": device, "dtype": dtype}
-#         super().__init__()
-#         self.in_features = in_features
-#         self.out_features = out_features
-#         self.weight = Parameter(
-#             torch.empty((out_features, in_features), **factory_kwargs),
-#             requires_grad=True,
-#         )
-#         if bias:
-#             self.bias = Parameter(
-#                 torch.empty(out_features, **factory_kwargs), requires_grad=True
-#             )
-#         else:
-#             self.register_parameter("bias", None)
-#         if (end-start)%2!=0:
-#             end = end+1
-#         self.start = start
-#         if low_end is None:
-#             low_end = (end-start) // 2
-#         self.low_end = low_end
-#         self.end = end
-#         self.s2 = nn.Parameter(
-#             torch.zeros(end - start, in_features), requires_grad=True
-#         )
-#         self.mixer_vec = nn.Parameter(torch.ones(1, low_end - start), requires_grad=True)
-#         self.mixer = nn.Linear(end - low_end, low_end - start, bias=False)
-#         self.reset_parameters()
-#         self.mixer.weight.requires_grad = True
-#         self.weight.requires_grad = False
-#         self.fused = False
-
-#     def reset_parameters(self) -> None:
-#         # Setting a=sqrt(5) in kaiming_uniform is the same as initializing with
-#         # uniform(-1/sqrt(in_features), 1/sqrt(in_features)). For details, see
-#         # https://github.com/pytorch/pytorch/issues/57109
-#         init.kaiming_uniform_(self.weight, a=math.sqrt(5))
-#         if self.bias is not None:
-#             fan_in, _ = init._calculate_fan_in_and_fan_out(self.weight)
-#             bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
-#             init.uniform_(self.bias, -bound, bound)
-#         init.kaiming_uniform_(self.mixer.weight, a=math.sqrt(5))*0.00001
-        
-#         # for i in range((self.end - self.start)//2):
-#         #     weight[i, i] = 1
-#         # with torch.no_grad():
-#         #     self.mixer.weight.copy_(weight)
-        
-
-#     def fuse_s2_weight(self):
-#         if self.fused == True:
-#             return
-#         self.weight.data[self.start : self.end, :] += self.s2
-#         with torch.no_grad():
-#             mid = self.low_end
-#             self.weight[self.start : mid, :] = self.weight[self.start : mid, :].mul(self.mixer_vec.T) + self.mixer.weight @ self.weight[mid:self.end, :] 
-#         self.fused = True
-
-#     def unfuse_s2_weight(self):
-#         if self.fused == False:
-#             return
-#         self.weight[self.start : self.end, :] -= self.s2
-#         self.fused = False
-
-#     def forward(self, input: Tensor) -> Tensor:
-#         base_output = torch.nn.functional.linear(input, self.weight, self.bias)
-#         if self.fused:
-#             return base_output
-#         else:
-#             s2_output = torch.nn.functional.linear(input, self.s2, None)
-#             mid = self.low_end
-
-#             # Extract the middle segment and add s2_output
-#             modified_channel = base_output[..., self.start:self.end] + s2_output
-            
-#             # Split the middle segment into low and high halves, retaining the updated high half
-#             modified_high_channel = modified_channel[..., mid:]
-#             modified_low_channel = modified_channel[..., :mid]
-
-#             # Use the mixer to produce the new low half
-#             mixed_part = self.mixer(modified_high_channel) + modified_low_channel * self.mixer_vec
-            
-#             # Construct the new middle segment from the mixer result and high half
-#             new_middle = torch.cat([mixed_part, modified_high_channel], dim=-1)
-            
-#             # Concatenate all segments
-#             output = torch.cat([
-#                 base_output[..., :self.start],
-#                 new_middle,
-#                 base_output[..., self.end:]
-#             ], dim=-1)
-#             # base_output[:, :, self.start : self.end] += s2_output
-#             # # Use the mixer output without in-place assignment
-#             # mixer_output = self.mixer(base_output[:, :, self.start : self.end])
-#             # base_output[:, :, self.start : (self.end+1)//2] = mixer_output
-#             #base_output[:, :, self.start : (self.end+1)//2] = self.mixer(base_output[:, :, self.start : self.end])
-#             return output
-
-#     def extra_repr(self) -> str:
-#         return f"in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None}"
-
-
-# class MixRowLinear(Module):
-
-#     __constants__ = ["in_features", "out_features"]
-#     in_features: int
-#     out_features: int
-#     weight: Tensor
-
-#     def __init__(
-#         self,
-#         in_features: int,
-#         out_features: int,
-#         bias: bool = True,
-#         start=None,
-#         end=None,
-#         device=None,
-#         dtype=None,
-#     ) -> None:
-#         factory_kwargs = {"device": device, "dtype": dtype}
-#         super().__init__()
-#         self.in_features = in_features
-#         self.out_features = out_features
-#         self.weight = Parameter(
-#             torch.empty((out_features, in_features), **factory_kwargs),
-#             requires_grad=True,
-#         )
-#         if bias:
-#             self.bias = Parameter(
-#                 torch.empty(out_features, **factory_kwargs), requires_grad=True
-#             )
-#         else:
-#             self.register_parameter("bias", None)
-#         self.reset_parameters()
-#         self.start = start
-#         self.end = end
-
-#         self.s2 = nn.Parameter(
-#             torch.zeros(out_features, end - start), requires_grad=True
-#         )
-#         self.weight.requires_grad = False
-#         self.fused = False
-
-#     def reset_parameters(self) -> None:
-#         # Setting a=sqrt(5) in kaiming_uniform is the same as initializing with
-#         # uniform(-1/sqrt(in_features), 1/sqrt(in_features)). For details, see
-#         # https://github.com/pytorch/pytorch/issues/57109
-#         init.kaiming_uniform_(self.weight, a=math.sqrt(5))
-#         if self.bias is not None:
-#             fan_in, _ = init._calculate_fan_in_and_fan_out(self.weight)
-#             bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
-#             init.uniform_(self.bias, -bound, bound)
-
-#     def fuse_s2_weight(self):
-#         if self.fused == True:
-#             return
-#         self.weight.data[:, self.start : self.end] += self.s2
-#         self.fused = True
-
-#     def unfuse_s2_weight(self):
-#         if self.fused == False:
-#             return
-#         self.weight[:, self.start : self.end] -= self.s2
-#         self.fused = False
-
-#     def forward(self, input: Tensor) -> Tensor:
-#         base_output = torch.nn.functional.linear(input, self.weight, self.bias)
-#         if self.fused:
-#             return base_output
-#         else:
-#             s2_output = torch.nn.functional.linear(
-#                 input[:, :, self.start : self.end], self.s2, None
-#             )
-#             base_output += s2_output
-#             return base_output
-
-#     def extra_repr(self) -> str:
-#         return f"in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None}"
