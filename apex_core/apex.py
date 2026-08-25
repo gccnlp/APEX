@@ -220,14 +220,17 @@ class MixColumnLinear(Module):
                 mixed_low_part =  modified_low_channel * self.mixer_vec
                 #mixed_low_part = modified_high_channel * self.mixer + modified_low_channel * self.mixer_vec
                 mixed_high_part = self.mixer(modified_high_channel) + modified_high_channel * self.mixer_scale
-                # Construct the new middle segment from the mixer result and high half
-                new_middle = torch.cat([mixed_low_part, mixed_high_part], dim=-1)
+                # Construct the tuned segment from the mixed pair and direct-update tail
+                direct_tuned_part = modified_channel[..., self.end - self.start :]
+                new_middle = torch.cat(
+                    [mixed_low_part, mixed_high_part, direct_tuned_part], dim=-1
+                )
                 
                 # Concatenate all segments
                 output = torch.cat([
                     base_output[..., :self.start],
                     new_middle,
-                    base_output[..., self.end:]
+                    base_output[..., self.tuned_end:]
                 ], dim=-1)
                 return output
             else:
@@ -246,14 +249,17 @@ class MixColumnLinear(Module):
                 mixed_low_part = self.mixer(modified_high_channel) + modified_low_channel * self.mixer_vec
                 mixed_high_part = modified_high_channel * self.mixer_scale
                 
-                # Construct the new middle segment from the mixer result and high half
-                new_middle = torch.cat([mixed_low_part, mixed_high_part], dim=-1)
+                # Construct the tuned segment from the mixed pair and direct-update tail
+                direct_tuned_part = modified_channel[..., self.end - self.start :]
+                new_middle = torch.cat(
+                    [mixed_low_part, mixed_high_part, direct_tuned_part], dim=-1
+                )
                 
                 # Concatenate all segments
                 output = torch.cat([
                     base_output[..., :self.start],
                     new_middle,
-                    base_output[..., self.end:]
+                    base_output[..., self.tuned_end:]
                 ], dim=-1)
                 return output
             # base_output[:, :, self.start : self.end] += s2_output
