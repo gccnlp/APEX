@@ -1,6 +1,6 @@
 # APEX
 
-Here is the implementation of our EMNLP 2026 Paper Advantageous Parameter Expansion Training Makes Better Large Language Models
+Here is the implementation of our EMNLP 2026 Paper "[Advantageous Parameter Expansion Training Makes Better Large Language Models](https://arxiv.org/abs/2505.24241v2)".
 <img width="816" height="325" alt="image" src="https://github.com/user-attachments/assets/e3616d84-ef1a-4c8d-9114-552585a5ed0a" />
 
 ## Contents
