@@ -27,3 +27,19 @@ The script uses repository-relative defaults. Override `MODEL_PATH`,
 ```bash
 bash scripts/train_apex_llama2_7b.sh
 ```
+
+## Citation
+```
+@misc{gu2026advantageousparameterexpansiontraining,
+      title={Advantageous Parameter Expansion Training Makes Better Large Language Models}, 
+      author={Naibin Gu and Yilong Chen and Zhenyu Zhang and Peng Fu and Zheng Lin and Shuohuan Wang and Yu Sun and Hua Wu and Weiping Wang and Haifeng Wang},
+      year={2026},
+      eprint={2505.24241},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2505.24241}, 
+}
+```
+
+## Acknowledgement
+This repo benefits from [S2FT](https://github.com/Infini-AI-Lab/S2FT) and [HazyResearch](https://github.com/HazyResearch/fly). Thanks to their great work!
